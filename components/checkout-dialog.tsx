@@ -4,6 +4,7 @@ import { useState, useRef } from 'react';
 import { Loader2, CheckCircle2, XCircle, Clock, User, Phone, ArrowLeft, Receipt, ScanLine, Wallet, Store } from 'lucide-react';
 import { useCart } from '@/contexts/cart-context';
 import { formatRupiah } from '@/lib/format';
+import { supabase } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -21,7 +22,14 @@ interface CheckoutDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-type CheckoutStep = 'details' | 'pending' | 'cash_success' | 'success' | 'failed' | 'expired';
+type CheckoutStep =
+  | 'details'
+  | 'pending'
+  | 'cash_waiting'
+  | 'cash_receipt'
+  | 'success'
+  | 'failed'
+  | 'expired';
 type PaymentMethod = 'qris' | 'cash';
 
 export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogProps) {
@@ -30,6 +38,7 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('qris');
   const [qrUrl, setQrUrl] = useState<string>('');
   const [transactionId, setTransactionId] = useState<string>('');
+  const [bookingId, setBookingId] = useState<string>('');
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [error, setError] = useState<string>('');
@@ -58,8 +67,10 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
           return;
         }
         setPaidAmount(data.totalAmount || totalAmount);
-        setStep('cash_success');
+        setBookingId(data.bookingId);
+        setStep('cash_waiting');
         clearCart();
+        startCashPolling(data.bookingId);
       } catch {
         setError('Terjadi kesalahan. Coba lagi.');
         setStep('failed');
@@ -131,11 +142,36 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
     }, 20000);
   };
 
+  const startCashPolling = (bId: string) => {
+    setPolling(true);
+
+    intervalRef.current = setInterval(async () => {
+      try {
+        const { data, error: sbError } = await supabase
+          .from('bookings')
+          .select('status')
+          .eq('id', bId)
+          .maybeSingle();
+
+        if (sbError) return;
+
+        if (data && data.status === 'paid') {
+          if (intervalRef.current) clearInterval(intervalRef.current);
+          setPolling(false);
+          setStep('cash_receipt');
+        }
+      } catch {
+        // keep polling
+      }
+    }, 5000);
+  };
+
   const handleReset = () => {
     if (intervalRef.current) clearInterval(intervalRef.current);
     setStep('details');
     setQrUrl('');
     setTransactionId('');
+    setBookingId('');
     setError('');
     setCustomerName('');
     setCustomerPhone('');
@@ -179,7 +215,8 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
           <DialogTitle className="font-display text-xl font-bold text-neon">
             {step === 'details' && 'Checkout Pesanan'}
             {step === 'pending' && 'Scan QRIS untuk Bayar'}
-            {step === 'cash_success' && 'Pesanan Dicatat!'}
+            {step === 'cash_waiting' && 'Menunggu Konfirmasi Kasir'}
+            {step === 'cash_receipt' && 'Pembayaran Diterima!'}
             {step === 'success' && 'Pembayaran Berhasil!'}
             {step === 'failed' && 'Pembayaran Gagal'}
             {step === 'expired' && 'QRIS Kedaluwarsa'}
@@ -322,14 +359,25 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
               </div>
             )}
 
-            {step === 'cash_success' && (
-              <div className="space-y-4 text-center py-4">
-                {stepIndicator(2)}
+            {/* Cash waiting — no finish button, must wait for admin */}
+            {step === 'cash_waiting' && (
+              <div className="space-y-5 text-center py-6">
+                {stepIndicator(1)}
                 <div className="relative inline-flex">
-                  <Store className="h-20 w-20 text-primary mx-auto glow-green" />
+                  <div className="p-5 rounded-full bg-yellow-500/10 border-2 border-yellow-500/30 animate-pulse-glow">
+                    <Store className="h-16 w-16 text-yellow-400" />
+                  </div>
                 </div>
-                <h3 className="font-display text-lg font-bold">Pesanan Dicatat!</h3>
-                <div className="p-4 rounded-xl bg-secondary/30 border border-primary/20 text-left space-y-2">
+                <h3 className="font-display text-lg font-bold">Menunggu Konfirmasi Kasir</h3>
+                <p className="text-sm text-muted-foreground max-w-xs mx-auto">
+                  Pesanan Anda sudah tercatat. Silakan bayar di kasir.
+                  Halaman ini akan otomatis menampilkan struk setelah kasir mengonfirmasi pembayaran.
+                </p>
+                <div className="flex items-center justify-center gap-2 text-sm text-yellow-400">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Menunggu konfirmasi...</span>
+                </div>
+                <div className="p-4 rounded-xl bg-secondary/30 border border-border/30 text-left space-y-2">
                   <div className="flex items-center gap-2 text-sm font-semibold mb-2">
                     <Receipt className="h-4 w-4 text-primary" />
                     Detail Pesanan
@@ -352,9 +400,49 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
                     <span className="font-bold text-primary">{formatRupiah(paidAmount)}</span>
                   </div>
                 </div>
+                <p className="text-xs text-muted-foreground/60">
+                  Jangan tutup halaman ini sebelum struk muncul.
+                </p>
+              </div>
+            )}
+
+            {/* Cash receipt — shown after admin confirms payment */}
+            {step === 'cash_receipt' && (
+              <div className="space-y-4 text-center py-4">
+                {stepIndicator(2)}
+                <div className="relative inline-flex">
+                  <CheckCircle2 className="h-20 w-20 text-primary mx-auto glow-green" />
+                </div>
+                <h3 className="font-display text-lg font-bold">Pembayaran Diterima!</h3>
+                <div className="p-4 rounded-xl bg-secondary/30 border border-primary/20 text-left space-y-2">
+                  <div className="flex items-center gap-2 text-sm font-semibold mb-2">
+                    <Receipt className="h-4 w-4 text-primary" />
+                    Struk Pembayaran
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">Nama</span>
+                    <span className="font-medium">{customerName}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">HP</span>
+                    <span className="font-medium">{customerPhone}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">Metode</span>
+                    <span className="font-medium">Tunai (Bayar di Tempat)</span>
+                  </div>
+                  <Separator />
+                  <div className="flex justify-between text-sm">
+                    <span className="font-semibold">Total Dibayar</span>
+                    <span className="font-bold text-primary">{formatRupiah(paidAmount)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">ID Pesanan</span>
+                    <span className="font-mono text-[10px]">{bookingId.slice(0, 24)}</span>
+                  </div>
+                </div>
                 <p className="text-sm text-muted-foreground">
-                  Silakan datang ke Line Up Gaming Space dan bayar di kasir.
-                  Pesanan Anda sudah tercatat di sistem.
+                  Pembayaran Anda telah dikonfirmasi oleh kasir. Simpan struk ini sebagai bukti.
                 </p>
                 <Button onClick={handleReset} variant="outline" className="w-full">
                   Selesai
