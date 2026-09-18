@@ -42,6 +42,7 @@ export interface Booking {
   customer_phone: string | null;
   created_at: string;
   paid_at: string | null;
+  expires_at: string | null;
 }
 
 export interface DailyRentalBooking {

@@ -87,6 +87,7 @@ export async function POST(req: NextRequest) {
         buatqris_transaction_id: qrisData.data.transaction_id,
         customer_name: customerName || null,
         customer_phone: customerPhone || null,
+        expires_at: qrisData.data.expired_at || new Date(Date.now() + 15 * 60 * 1000).toISOString(),
       })
       .select()
       .single();

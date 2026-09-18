@@ -41,6 +41,7 @@ export async function POST(req: NextRequest) {
         payment_method: 'cash',
         customer_name: customerName || null,
         customer_phone: customerPhone || null,
+        expires_at: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
       })
       .select()
       .single();
