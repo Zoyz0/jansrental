@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { Booking, DailyRentalBooking } from '@/lib/types';
 import { formatRupiah } from '@/lib/format';
-import { Lock, LayoutDashboard, Calendar, ShoppingBag, Clock, CheckCircle2, XCircle, Phone, User, Gamepad2, Package } from 'lucide-react';
+import { Lock, LayoutDashboard, Calendar, Clock, CheckCircle2, Phone, User, Gamepad2, Package, Wallet, ScanLine, Store } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -75,6 +75,19 @@ export default function AdminPage() {
     }
   };
 
+  const handleMarkCashPaid = async (id: string) => {
+    const { error } = await supabase
+      .from('bookings')
+      .update({ status: 'paid', paid_at: new Date().toISOString() })
+      .eq('id', id);
+    if (error) {
+      toast.error('Gagal menandai pembayaran');
+    } else {
+      toast.success('Pembayaran tunai dikonfirmasi');
+      loadData();
+    }
+  };
+
   if (view === 'login') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-grid bg-radial-glow px-4">
@@ -115,6 +128,7 @@ export default function AdminPage() {
   const paidBookings = bookings.filter((b) => b.status === 'paid');
   const pendingRentals = rentalBookings.filter((b) => b.status === 'pending');
   const confirmedRentals = rentalBookings.filter((b) => b.status === 'confirmed');
+  const cashPending = bookings.filter((b) => b.status === 'pending' && b.payment_method === 'cash');
 
   return (
     <div className="min-h-screen bg-grid">
@@ -134,7 +148,7 @@ export default function AdminPage() {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
           <div className="p-4 rounded-xl bg-card border border-border/50">
             <div className="flex items-center gap-2 text-muted-foreground mb-2">
               <Clock className="h-4 w-4" />
@@ -148,6 +162,13 @@ export default function AdminPage() {
               <span className="text-xs">Booking Lunas</span>
             </div>
             <p className="text-2xl font-bold text-green-400">{paidBookings.length}</p>
+          </div>
+          <div className="p-4 rounded-xl bg-card border border-yellow-500/20">
+            <div className="flex items-center gap-2 text-muted-foreground mb-2">
+              <Wallet className="h-4 w-4" />
+              <span className="text-xs">Tunai Pending</span>
+            </div>
+            <p className="text-2xl font-bold text-yellow-400">{cashPending.length}</p>
           </div>
           <div className="p-4 rounded-xl bg-card border border-border/50">
             <div className="flex items-center gap-2 text-muted-foreground mb-2">
@@ -193,11 +214,23 @@ export default function AdminPage() {
                         className="p-4 rounded-xl bg-card border border-border/50 space-y-3"
                       >
                         <div className="flex items-start justify-between gap-3">
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2">
+                          <div className="space-y-1 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <Gamepad2 className="h-4 w-4 text-primary" />
                               <span className="font-semibold">{b.console_name}</span>
                               <span className="text-sm text-muted-foreground">({b.duration_hours} jam)</span>
+                              {/* Payment method badge */}
+                              {b.payment_method === 'cash' ? (
+                                <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">
+                                  <Wallet className="h-3 w-3" />
+                                  Tunai
+                                </span>
+                              ) : (
+                                <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
+                                  <ScanLine className="h-3 w-3" />
+                                  QRIS
+                                </span>
+                              )}
                             </div>
                             {b.customer_name && (
                               <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
@@ -229,6 +262,17 @@ export default function AdminPage() {
                             <Badge className={statusBadge(b.status)} variant="outline">
                               {b.status}
                             </Badge>
+                            {/* Mark cash as paid button */}
+                            {b.status === 'pending' && b.payment_method === 'cash' && (
+                              <Button
+                                size="sm"
+                                onClick={() => handleMarkCashPaid(b.id)}
+                                className="w-full mt-1 hover:glow-neon"
+                              >
+                                <Store className="h-3.5 w-3.5 mr-1" />
+                                Lunasi
+                              </Button>
+                            )}
                           </div>
                         </div>
                       </div>

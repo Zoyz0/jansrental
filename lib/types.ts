@@ -36,6 +36,7 @@ export interface Booking {
   food_items_json: FoodOrder[];
   total_amount: number;
   status: 'pending' | 'paid' | 'expired' | 'failed';
+  payment_method: 'qris' | 'cash';
   buatqris_transaction_id: string | null;
   customer_name: string | null;
   customer_phone: string | null;

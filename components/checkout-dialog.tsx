@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import { Loader2, CheckCircle2, XCircle, Clock, User, Phone, ArrowLeft, Receipt, ScanLine } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, Clock, User, Phone, ArrowLeft, Receipt, ScanLine, Wallet, Store } from 'lucide-react';
 import { useCart } from '@/contexts/cart-context';
 import { formatRupiah } from '@/lib/format';
 import { Button } from '@/components/ui/button';
@@ -21,11 +21,13 @@ interface CheckoutDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-type CheckoutStep = 'details' | 'pending' | 'success' | 'failed' | 'expired';
+type CheckoutStep = 'details' | 'pending' | 'cash_success' | 'success' | 'failed' | 'expired';
+type PaymentMethod = 'qris' | 'cash';
 
 export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogProps) {
   const { items, totalAmount, clearCart, openCart } = useCart();
   const [step, setStep] = useState<CheckoutStep>('details');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('qris');
   const [qrUrl, setQrUrl] = useState<string>('');
   const [transactionId, setTransactionId] = useState<string>('');
   const [customerName, setCustomerName] = useState('');
@@ -41,6 +43,29 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
       return;
     }
     setError('');
+
+    if (paymentMethod === 'cash') {
+      try {
+        const res = await fetch('/api/checkout-cash', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items, customerName, customerPhone }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setError(data.error || 'Gagal membuat pesanan');
+          setStep('failed');
+          return;
+        }
+        setPaidAmount(data.totalAmount || totalAmount);
+        setStep('cash_success');
+        clearCart();
+      } catch {
+        setError('Terjadi kesalahan. Coba lagi.');
+        setStep('failed');
+      }
+      return;
+    }
 
     try {
       const res = await fetch('/api/checkout', {
@@ -154,6 +179,7 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
           <DialogTitle className="font-display text-xl font-bold text-neon">
             {step === 'details' && 'Checkout Pesanan'}
             {step === 'pending' && 'Scan QRIS untuk Bayar'}
+            {step === 'cash_success' && 'Pesanan Dicatat!'}
             {step === 'success' && 'Pembayaran Berhasil!'}
             {step === 'failed' && 'Pembayaran Gagal'}
             {step === 'expired' && 'QRIS Kedaluwarsa'}
@@ -191,6 +217,37 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
                   </div>
                 </div>
 
+                {/* Payment method selection */}
+                <div className="space-y-2">
+                  <Label>Metode Pembayaran</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => setPaymentMethod('qris')}
+                      className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${
+                        paymentMethod === 'qris'
+                          ? 'border-primary bg-primary/10 glow-neon'
+                          : 'border-border/30 bg-secondary/20 hover:border-primary/30'
+                      }`}
+                    >
+                      <ScanLine className="h-6 w-6 text-primary" />
+                      <span className="text-sm font-medium">QRIS</span>
+                      <span className="text-[10px] text-muted-foreground">Bayar online</span>
+                    </button>
+                    <button
+                      onClick={() => setPaymentMethod('cash')}
+                      className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${
+                        paymentMethod === 'cash'
+                          ? 'border-primary bg-primary/10 glow-neon'
+                          : 'border-border/30 bg-secondary/20 hover:border-primary/30'
+                      }`}
+                    >
+                      <Wallet className="h-6 w-6 text-primary" />
+                      <span className="text-sm font-medium">Tunai</span>
+                      <span className="text-[10px] text-muted-foreground">Bayar di tempat</span>
+                    </button>
+                  </div>
+                </div>
+
                 {/* Customer info */}
                 <div className="space-y-3">
                   <div className="space-y-1.5">
@@ -222,7 +279,7 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
                   className="w-full font-display font-semibold hover:glow-neon glow-neon"
                   size="lg"
                 >
-                  Bayar dengan QRIS
+                  {paymentMethod === 'qris' ? 'Bayar dengan QRIS' : 'Pesan & Bayar di Tempat'}
                 </Button>
                 <button
                   onClick={handleBackToCart}
@@ -237,7 +294,6 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
             {step === 'pending' && (
               <div className="space-y-4 text-center">
                 {stepIndicator(1)}
-                {/* QR container with scan line effect */}
                 <div className="flex justify-center">
                   <div className="relative p-5 bg-white rounded-2xl overflow-hidden">
                     <img
@@ -245,7 +301,6 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
                       alt="QRIS Payment"
                       className="w-56 h-56 object-contain"
                     />
-                    {/* Scan line animation */}
                     <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-b from-primary/0 via-primary/60 to-primary/0 animate-scan-line" />
                     <div className="absolute inset-0 rounded-2xl ring-2 ring-primary/30 animate-pulse-glow pointer-events-none" />
                   </div>
@@ -267,6 +322,46 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
               </div>
             )}
 
+            {step === 'cash_success' && (
+              <div className="space-y-4 text-center py-4">
+                {stepIndicator(2)}
+                <div className="relative inline-flex">
+                  <Store className="h-20 w-20 text-primary mx-auto glow-green" />
+                </div>
+                <h3 className="font-display text-lg font-bold">Pesanan Dicatat!</h3>
+                <div className="p-4 rounded-xl bg-secondary/30 border border-primary/20 text-left space-y-2">
+                  <div className="flex items-center gap-2 text-sm font-semibold mb-2">
+                    <Receipt className="h-4 w-4 text-primary" />
+                    Detail Pesanan
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">Nama</span>
+                    <span className="font-medium">{customerName}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">HP</span>
+                    <span className="font-medium">{customerPhone}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">Metode</span>
+                    <span className="font-medium">Tunai (Bayar di Tempat)</span>
+                  </div>
+                  <Separator />
+                  <div className="flex justify-between text-sm">
+                    <span className="font-semibold">Total Bayar</span>
+                    <span className="font-bold text-primary">{formatRupiah(paidAmount)}</span>
+                  </div>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Silakan datang ke Line Up Gaming Space dan bayar di kasir.
+                  Pesanan Anda sudah tercatat di sistem.
+                </p>
+                <Button onClick={handleReset} variant="outline" className="w-full">
+                  Selesai
+                </Button>
+              </div>
+            )}
+
             {step === 'success' && (
               <div className="space-y-4 text-center py-4">
                 {stepIndicator(2)}
@@ -274,7 +369,6 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
                   <CheckCircle2 className="h-20 w-20 text-primary mx-auto glow-green" />
                 </div>
                 <h3 className="font-display text-lg font-bold">Pembayaran Diterima!</h3>
-                {/* Receipt */}
                 <div className="p-4 rounded-xl bg-secondary/30 border border-primary/20 text-left space-y-2">
                   <div className="flex items-center gap-2 text-sm font-semibold mb-2">
                     <Receipt className="h-4 w-4 text-primary" />
