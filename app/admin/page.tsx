@@ -1,16 +1,21 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
-import type { Booking, DailyRentalBooking } from '@/lib/types';
+import type { Booking, DailyRentalBooking, Console, FoodItem } from '@/lib/types';
 import { formatRupiah } from '@/lib/format';
-import { Lock, LayoutDashboard, Calendar, Clock, CheckCircle2, Phone, User, Gamepad2, Package, Wallet, ScanLine, Store } from 'lucide-react';
+import {
+  Lock, LayoutDashboard, Calendar, Clock, CheckCircle2, Phone, User,
+  Gamepad2, Package, Wallet, ScanLine, Store, UtensilsCrossed, Plus,
+  Pencil, Save, X, ToggleLeft, ToggleRight, Trash2, Crown,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import { format, parseISO } from 'date-fns';
 import { id as localeId } from 'date-fns/locale';
@@ -19,34 +24,63 @@ const ADMIN_PIN = 'admin123';
 
 type View = 'login' | 'dashboard';
 
+interface FoodFormData {
+  name: string;
+  price: string;
+  stock: string;
+  category: string;
+  emoji: string;
+}
+
+const emptyFoodForm: FoodFormData = { name: '', price: '', stock: '', category: 'food', emoji: '' };
+
 export default function AdminPage() {
   const [view, setView] = useState<View>('login');
   const [pin, setPin] = useState('');
-  const [error, setError] = useState('');
+  const [loginError, setLoginError] = useState('');
 
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [rentalBookings, setRentalBookings] = useState<DailyRentalBooking[]>([]);
+  const [consoles, setConsoles] = useState<Console[]>([]);
+  const [foods, setFoods] = useState<FoodItem[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // Inline edit state for consoles
+  const [editingConsoleId, setEditingConsoleId] = useState<string | null>(null);
+  const [consoleEditValues, setConsoleEditValues] = useState<Record<string, string>>({});
+
+  // Inline edit state for food
+  const [editingFoodId, setEditingFoodId] = useState<string | null>(null);
+  const [foodEditValues, setFoodEditValues] = useState<Partial<FoodFormData>>({});
+
+  // Add food form
+  const [showAddFood, setShowAddFood] = useState(false);
+  const [addFoodForm, setAddFoodForm] = useState<FoodFormData>(emptyFoodForm);
+  const [saving, setSaving] = useState(false);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     if (pin === ADMIN_PIN) {
       setView('dashboard');
-      setError('');
-      loadData();
+      setLoginError('');
+      loadAll();
     } else {
-      setError('PIN salah. Coba lagi.');
+      setLoginError('PIN salah. Coba lagi.');
     }
   };
 
-  const loadData = async () => {
+  const loadAll = async () => {
     setLoading(true);
-    const [bookingRes, rentalRes] = await Promise.all([
+    const [bookingRes, rentalRes, consoleRes, foodRes] = await Promise.all([
       supabase.from('bookings').select('*').order('created_at', { ascending: false }),
       supabase.from('daily_rental_bookings').select('*').order('created_at', { ascending: false }),
+      supabase.from('consoles').select('*').order('price_per_hour'),
+      supabase.from('food_items').select('*').order('category').order('name'),
     ]);
     if (bookingRes.data) setBookings(bookingRes.data as Booking[]);
     if (rentalRes.data) setRentalBookings(rentalRes.data as DailyRentalBooking[]);
+    if (consoleRes.data) setConsoles(consoleRes.data as Console[]);
+    if (foodRes.data) setFoods(foodRes.data as FoodItem[]);
     setLoading(false);
   };
 
@@ -67,12 +101,8 @@ export default function AdminPage() {
       .from('daily_rental_bookings')
       .update({ status: 'confirmed' })
       .eq('id', id);
-    if (error) {
-      toast.error('Gagal mengkonfirmasi booking');
-    } else {
-      toast.success('Booking dikonfirmasi');
-      loadData();
-    }
+    if (error) toast.error('Gagal mengkonfirmasi booking');
+    else { toast.success('Booking dikonfirmasi'); loadAll(); }
   };
 
   const handleMarkCashPaid = async (id: string) => {
@@ -80,12 +110,91 @@ export default function AdminPage() {
       .from('bookings')
       .update({ status: 'paid', paid_at: new Date().toISOString() })
       .eq('id', id);
-    if (error) {
-      toast.error('Gagal menandai pembayaran');
-    } else {
-      toast.success('Pembayaran tunai dikonfirmasi');
-      loadData();
-    }
+    if (error) toast.error('Gagal menandai pembayaran');
+    else { toast.success('Pembayaran tunai dikonfirmasi'); loadAll(); }
+  };
+
+  // --- Console price editing ---
+  const startEditConsole = (c: Console) => {
+    setEditingConsoleId(c.id);
+    setConsoleEditValues({ price: String(c.price_per_hour) });
+  };
+
+  const cancelEditConsole = () => {
+    setEditingConsoleId(null);
+    setConsoleEditValues({});
+  };
+
+  const saveConsole = async (id: string) => {
+    const price = parseInt(consoleEditValues.price || '0', 10);
+    if (!price || price <= 0) { toast.error('Harga tidak valid'); return; }
+    setSaving(true);
+    const { error } = await supabase.from('consoles').update({ price_per_hour: price }).eq('id', id);
+    setSaving(false);
+    if (error) toast.error('Gagal menyimpan harga');
+    else { toast.success('Harga konsol diperbarui'); cancelEditConsole(); loadAll(); }
+  };
+
+  // --- Food editing ---
+  const startEditFood = (f: FoodItem) => {
+    setEditingFoodId(f.id);
+    setFoodEditValues({ name: f.name, price: String(f.price), stock: String(f.stock), emoji: f.emoji || '' });
+  };
+
+  const cancelEditFood = () => {
+    setEditingFoodId(null);
+    setFoodEditValues({});
+  };
+
+  const saveFood = async (id: string) => {
+    const price = parseInt(foodEditValues.price || '0', 10);
+    const stock = parseInt(foodEditValues.stock || '0', 10);
+    if (!foodEditValues.name?.trim()) { toast.error('Nama wajib diisi'); return; }
+    if (!price || price <= 0) { toast.error('Harga tidak valid'); return; }
+    if (stock < 0) { toast.error('Stok tidak boleh negatif'); return; }
+    setSaving(true);
+    const { error } = await supabase.from('food_items').update({
+      name: foodEditValues.name.trim(),
+      price,
+      stock,
+      emoji: foodEditValues.emoji?.trim() || null,
+    }).eq('id', id);
+    setSaving(false);
+    if (error) toast.error('Gagal menyimpan perubahan');
+    else { toast.success('Item diperbarui'); cancelEditFood(); loadAll(); }
+  };
+
+  const toggleFoodActive = async (f: FoodItem) => {
+    const { error } = await supabase.from('food_items').update({ is_active: !f.is_active }).eq('id', f.id);
+    if (error) toast.error('Gagal mengubah status');
+    else { toast.success(f.is_active ? 'Item dinonaktifkan' : 'Item diaktifkan'); loadAll(); }
+  };
+
+  const deleteFood = async (f: FoodItem) => {
+    if (!confirm(`Hapus "${f.name}"? Tindakan ini tidak bisa dibatalkan.`)) return;
+    const { error } = await supabase.from('food_items').delete().eq('id', f.id);
+    if (error) toast.error('Gagal menghapus item');
+    else { toast.success('Item dihapus'); loadAll(); }
+  };
+
+  const addFood = async () => {
+    const price = parseInt(addFoodForm.price, 10);
+    const stock = parseInt(addFoodForm.stock, 10);
+    if (!addFoodForm.name.trim()) { toast.error('Nama wajib diisi'); return; }
+    if (!price || price <= 0) { toast.error('Harga tidak valid'); return; }
+    if (isNaN(stock) || stock < 0) { toast.error('Stok tidak valid'); return; }
+    setSaving(true);
+    const { error } = await supabase.from('food_items').insert({
+      name: addFoodForm.name.trim(),
+      price,
+      stock,
+      category: addFoodForm.category,
+      emoji: addFoodForm.emoji.trim() || null,
+      is_active: true,
+    });
+    setSaving(false);
+    if (error) toast.error('Gagal menambah item');
+    else { toast.success('Item ditambahkan'); setAddFoodForm(emptyFoodForm); setShowAddFood(false); loadAll(); }
   };
 
   if (view === 'login') {
@@ -111,13 +220,13 @@ export default function AdminPage() {
                 autoFocus
               />
             </div>
-            {error && <p className="text-sm text-destructive">{error}</p>}
+            {loginError && <p className="text-sm text-destructive">{loginError}</p>}
             <Button type="submit" className="w-full font-display font-semibold hover:glow-neon" size="lg">
               Masuk
             </Button>
           </form>
           <p className="text-xs text-muted-foreground text-center">
-            PIN default: admin123 (ganti di kode sebelum production)
+            PIN default: admin123
           </p>
         </div>
       </div>
@@ -130,6 +239,8 @@ export default function AdminPage() {
   const confirmedRentals = rentalBookings.filter((b) => b.status === 'confirmed');
   const cashPending = bookings.filter((b) => b.status === 'pending' && b.payment_method === 'cash');
 
+  const foodByCategory = (cat: string) => foods.filter((f) => f.category === cat);
+
   return (
     <div className="min-h-screen bg-grid">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8">
@@ -139,65 +250,46 @@ export default function AdminPage() {
             <LayoutDashboard className="h-7 w-7 text-primary" />
             <h1 className="font-display text-2xl sm:text-3xl font-bold text-neon">Admin Dashboard</h1>
           </div>
-          <Button
-            variant="outline"
-            onClick={() => { setView('login'); setPin(''); }}
-          >
+          <Button variant="outline" onClick={() => { setView('login'); setPin(''); }}>
             Keluar
           </Button>
         </div>
 
         {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
-          <div className="p-4 rounded-xl bg-card border border-border/50">
-            <div className="flex items-center gap-2 text-muted-foreground mb-2">
-              <Clock className="h-4 w-4" />
-              <span className="text-xs">Booking Pending</span>
+          {[
+            { icon: Clock, label: 'Booking Pending', value: pendingBookings.length, color: 'text-yellow-400' },
+            { icon: CheckCircle2, label: 'Booking Lunas', value: paidBookings.length, color: 'text-green-400' },
+            { icon: Wallet, label: 'Tunai Pending', value: cashPending.length, color: 'text-yellow-400', highlight: true },
+            { icon: Calendar, label: 'Sewa Pending', value: pendingRentals.length, color: 'text-yellow-400' },
+            { icon: Package, label: 'Sewa Konfirm', value: confirmedRentals.length, color: 'text-green-400' },
+          ].map((s) => (
+            <div key={s.label} className={`p-4 rounded-xl bg-card border ${s.highlight ? 'border-yellow-500/20' : 'border-border/50'}`}>
+              <div className="flex items-center gap-2 text-muted-foreground mb-2">
+                <s.icon className="h-4 w-4" />
+                <span className="text-xs">{s.label}</span>
+              </div>
+              <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
             </div>
-            <p className="text-2xl font-bold text-yellow-400">{pendingBookings.length}</p>
-          </div>
-          <div className="p-4 rounded-xl bg-card border border-border/50">
-            <div className="flex items-center gap-2 text-muted-foreground mb-2">
-              <CheckCircle2 className="h-4 w-4" />
-              <span className="text-xs">Booking Lunas</span>
-            </div>
-            <p className="text-2xl font-bold text-green-400">{paidBookings.length}</p>
-          </div>
-          <div className="p-4 rounded-xl bg-card border border-yellow-500/20">
-            <div className="flex items-center gap-2 text-muted-foreground mb-2">
-              <Wallet className="h-4 w-4" />
-              <span className="text-xs">Tunai Pending</span>
-            </div>
-            <p className="text-2xl font-bold text-yellow-400">{cashPending.length}</p>
-          </div>
-          <div className="p-4 rounded-xl bg-card border border-border/50">
-            <div className="flex items-center gap-2 text-muted-foreground mb-2">
-              <Calendar className="h-4 w-4" />
-              <span className="text-xs">Sewa Pending</span>
-            </div>
-            <p className="text-2xl font-bold text-yellow-400">{pendingRentals.length}</p>
-          </div>
-          <div className="p-4 rounded-xl bg-card border border-border/50">
-            <div className="flex items-center gap-2 text-muted-foreground mb-2">
-              <Package className="h-4 w-4" />
-              <span className="text-xs">Sewa Konfirm</span>
-            </div>
-            <p className="text-2xl font-bold text-green-400">{confirmedRentals.length}</p>
-          </div>
+          ))}
         </div>
 
         {loading ? (
           <div className="text-center py-12 text-muted-foreground">Memuat data...</div>
         ) : (
           <Tabs defaultValue="instore" className="w-full">
-            <TabsList className="grid w-full max-w-md grid-cols-2 mb-6">
-              <TabsTrigger value="instore" className="font-display">
+            <TabsList className="flex w-full max-w-2xl mb-6 h-auto gap-1 p-1 flex-wrap">
+              <TabsTrigger value="instore" className="font-display flex-1">
                 <Gamepad2 className="h-4 w-4 mr-2" />
-                Booking di Tempat
+                Booking
               </TabsTrigger>
-              <TabsTrigger value="daily" className="font-display">
+              <TabsTrigger value="daily" className="font-display flex-1">
                 <Package className="h-4 w-4 mr-2" />
                 Sewa Harian
+              </TabsTrigger>
+              <TabsTrigger value="catalog" className="font-display flex-1">
+                <UtensilsCrossed className="h-4 w-4 mr-2" />
+                Katalog
               </TabsTrigger>
             </TabsList>
 
@@ -209,39 +301,27 @@ export default function AdminPage() {
                     <p className="text-center py-12 text-muted-foreground">Belum ada booking</p>
                   ) : (
                     bookings.map((b) => (
-                      <div
-                        key={b.id}
-                        className="p-4 rounded-xl bg-card border border-border/50 space-y-3"
-                      >
+                      <div key={b.id} className="p-4 rounded-xl bg-card border border-border/50 space-y-3">
                         <div className="flex items-start justify-between gap-3">
                           <div className="space-y-1 flex-1">
                             <div className="flex items-center gap-2 flex-wrap">
                               <Gamepad2 className="h-4 w-4 text-primary" />
                               <span className="font-semibold">{b.console_name}</span>
                               <span className="text-sm text-muted-foreground">({b.duration_hours} jam)</span>
-                              {/* Payment method badge */}
                               {b.payment_method === 'cash' ? (
                                 <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">
-                                  <Wallet className="h-3 w-3" />
-                                  Tunai
+                                  <Wallet className="h-3 w-3" />Tunai
                                 </span>
                               ) : (
                                 <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
-                                  <ScanLine className="h-3 w-3" />
-                                  QRIS
+                                  <ScanLine className="h-3 w-3" />QRIS
                                 </span>
                               )}
                             </div>
                             {b.customer_name && (
                               <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                                <User className="h-3.5 w-3.5" />
-                                {b.customer_name}
-                                {b.customer_phone && (
-                                  <>
-                                    <Phone className="h-3.5 w-3.5 ml-2" />
-                                    {b.customer_phone}
-                                  </>
-                                )}
+                                <User className="h-3.5 w-3.5" />{b.customer_name}
+                                {b.customer_phone && (<><Phone className="h-3.5 w-3.5 ml-2" />{b.customer_phone}</>)}
                               </div>
                             )}
                             {b.food_items_json && b.food_items_json.length > 0 && (
@@ -259,18 +339,10 @@ export default function AdminPage() {
                           </div>
                           <div className="text-right space-y-2">
                             <p className="text-lg font-bold text-primary">{formatRupiah(b.total_amount)}</p>
-                            <Badge className={statusBadge(b.status)} variant="outline">
-                              {b.status}
-                            </Badge>
-                            {/* Mark cash as paid button */}
+                            <Badge className={statusBadge(b.status)} variant="outline">{b.status}</Badge>
                             {b.status === 'pending' && b.payment_method === 'cash' && (
-                              <Button
-                                size="sm"
-                                onClick={() => handleMarkCashPaid(b.id)}
-                                className="w-full mt-1 hover:glow-neon"
-                              >
-                                <Store className="h-3.5 w-3.5 mr-1" />
-                                Lunasi
+                              <Button size="sm" onClick={() => handleMarkCashPaid(b.id)} className="w-full mt-1 hover:glow-neon">
+                                <Store className="h-3.5 w-3.5 mr-1" />Lunasi
                               </Button>
                             )}
                           </div>
@@ -290,10 +362,7 @@ export default function AdminPage() {
                     <p className="text-center py-12 text-muted-foreground">Belum ada booking sewa harian</p>
                   ) : (
                     rentalBookings.map((r) => (
-                      <div
-                        key={r.id}
-                        className="p-4 rounded-xl bg-card border border-border/50 space-y-3"
-                      >
+                      <div key={r.id} className="p-4 rounded-xl bg-card border border-border/50 space-y-3">
                         <div className="flex items-start justify-between gap-3">
                           <div className="space-y-1">
                             <div className="flex items-center gap-2">
@@ -301,14 +370,8 @@ export default function AdminPage() {
                               <span className="font-semibold">{r.rental_name}</span>
                             </div>
                             <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                              <User className="h-3.5 w-3.5" />
-                              {r.customer_name}
-                              {r.customer_phone && (
-                                <>
-                                  <Phone className="h-3.5 w-3.5 ml-2" />
-                                  {r.customer_phone}
-                                </>
-                              )}
+                              <User className="h-3.5 w-3.5" />{r.customer_name}
+                              {r.customer_phone && (<><Phone className="h-3.5 w-3.5 ml-2" />{r.customer_phone}</>)}
                             </div>
                             <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
                               <Calendar className="h-3.5 w-3.5" />
@@ -321,15 +384,9 @@ export default function AdminPage() {
                           </div>
                           <div className="text-right space-y-2">
                             <p className="text-lg font-bold text-primary">{formatRupiah(r.total_amount)}</p>
-                            <Badge className={statusBadge(r.status)} variant="outline">
-                              {r.status}
-                            </Badge>
+                            <Badge className={statusBadge(r.status)} variant="outline">{r.status}</Badge>
                             {r.status === 'pending' && (
-                              <Button
-                                size="sm"
-                                onClick={() => handleConfirmRental(r.id)}
-                                className="w-full mt-1 hover:glow-neon"
-                              >
+                              <Button size="sm" onClick={() => handleConfirmRental(r.id)} className="w-full mt-1 hover:glow-neon">
                                 Konfirmasi
                               </Button>
                             )}
@@ -338,6 +395,305 @@ export default function AdminPage() {
                       </div>
                     ))
                   )}
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            {/* Catalog management */}
+            <TabsContent value="catalog">
+              <ScrollArea className="max-h-[80vh] scrollbar-thin">
+                <div className="space-y-8 pr-1">
+
+                  {/* Console prices */}
+                  <div>
+                    <div className="flex items-center gap-2 mb-4">
+                      <Gamepad2 className="h-5 w-5 text-primary" />
+                      <h2 className="font-display text-lg font-bold">Harga Konsol</h2>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {consoles.map((c) => (
+                        <div key={c.id} className="p-4 rounded-xl bg-card border border-border/50">
+                          <div className="flex items-center gap-2 mb-3">
+                            {c.name === 'Tempat VIP' ? (
+                              <Crown className="h-4 w-4 text-yellow-400" />
+                            ) : (
+                              <Gamepad2 className="h-4 w-4 text-primary" />
+                            )}
+                            <span className="font-semibold">{c.name}</span>
+                          </div>
+
+                          {editingConsoleId === c.id ? (
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm text-muted-foreground whitespace-nowrap">Rp</span>
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  value={consoleEditValues.price || ''}
+                                  onChange={(e) => setConsoleEditValues({ price: e.target.value })}
+                                  className="text-sm h-8"
+                                  placeholder="Harga per jam"
+                                  autoFocus
+                                />
+                                <span className="text-xs text-muted-foreground whitespace-nowrap">/jam</span>
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  size="sm"
+                                  onClick={() => saveConsole(c.id)}
+                                  disabled={saving}
+                                  className="flex-1 hover:glow-neon"
+                                >
+                                  <Save className="h-3.5 w-3.5 mr-1" />Simpan
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={cancelEditConsole} className="flex-1">
+                                  <X className="h-3.5 w-3.5 mr-1" />Batal
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-between">
+                              <p className="text-xl font-bold text-primary">
+                                {formatRupiah(c.price_per_hour)}<span className="text-xs font-normal text-muted-foreground">/jam</span>
+                              </p>
+                              <Button size="sm" variant="outline" onClick={() => startEditConsole(c)}>
+                                <Pencil className="h-3.5 w-3.5 mr-1" />Edit
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <Separator />
+
+                  {/* Food & drinks */}
+                  <div>
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-2">
+                        <UtensilsCrossed className="h-5 w-5 text-primary" />
+                        <h2 className="font-display text-lg font-bold">Makanan & Minuman</h2>
+                      </div>
+                      <Button size="sm" onClick={() => setShowAddFood(!showAddFood)} variant={showAddFood ? 'outline' : 'default'} className="hover:glow-neon">
+                        {showAddFood ? <><X className="h-3.5 w-3.5 mr-1" />Batal</> : <><Plus className="h-3.5 w-3.5 mr-1" />Tambah Item</>}
+                      </Button>
+                    </div>
+
+                    {/* Add food form */}
+                    {showAddFood && (
+                      <div className="p-4 rounded-xl bg-secondary/30 border border-primary/20 mb-4 space-y-3 animate-float-up">
+                        <p className="text-sm font-semibold text-primary">Tambah Item Baru</p>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="col-span-2 space-y-1.5">
+                            <Label className="text-xs">Nama Item</Label>
+                            <Input
+                              value={addFoodForm.name}
+                              onChange={(e) => setAddFoodForm((p) => ({ ...p, name: e.target.value }))}
+                              placeholder="Contoh: Mie Goreng"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-xs">Harga (Rp)</Label>
+                            <Input
+                              type="number"
+                              min={0}
+                              value={addFoodForm.price}
+                              onChange={(e) => setAddFoodForm((p) => ({ ...p, price: e.target.value }))}
+                              placeholder="15000"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-xs">Stok Awal</Label>
+                            <Input
+                              type="number"
+                              min={0}
+                              value={addFoodForm.stock}
+                              onChange={(e) => setAddFoodForm((p) => ({ ...p, stock: e.target.value }))}
+                              placeholder="10"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-xs">Kategori</Label>
+                            <select
+                              value={addFoodForm.category}
+                              onChange={(e) => setAddFoodForm((p) => ({ ...p, category: e.target.value }))}
+                              className="w-full h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            >
+                              <option value="food">Makanan</option>
+                              <option value="drink">Minuman</option>
+                            </select>
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-xs">Emoji</Label>
+                            <Input
+                              value={addFoodForm.emoji}
+                              onChange={(e) => setAddFoodForm((p) => ({ ...p, emoji: e.target.value }))}
+                              placeholder="🍜"
+                              maxLength={4}
+                            />
+                          </div>
+                        </div>
+                        <Button onClick={addFood} disabled={saving} className="w-full hover:glow-neon">
+                          <Plus className="h-4 w-4 mr-2" />Tambah Item
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* Food list by category */}
+                    {(['food', 'drink'] as const).map((cat) => {
+                      const catFoods = foodByCategory(cat);
+                      if (catFoods.length === 0) return null;
+                      return (
+                        <div key={cat} className="mb-4">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                            {cat === 'food' ? '🍔 Makanan' : '🥤 Minuman'}
+                          </p>
+                          <div className="space-y-2">
+                            {catFoods.map((f) => (
+                              <div
+                                key={f.id}
+                                className={`p-3 rounded-xl border transition-all ${
+                                  f.is_active ? 'bg-card border-border/50' : 'bg-secondary/20 border-border/20 opacity-60'
+                                }`}
+                              >
+                                {editingFoodId === f.id ? (
+                                  <div className="space-y-3">
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <div className="col-span-2 space-y-1">
+                                        <Label className="text-xs">Nama</Label>
+                                        <Input
+                                          value={foodEditValues.name || ''}
+                                          onChange={(e) => setFoodEditValues((p) => ({ ...p, name: e.target.value }))}
+                                          className="h-8 text-sm"
+                                          autoFocus
+                                        />
+                                      </div>
+                                      <div className="space-y-1">
+                                        <Label className="text-xs">Harga (Rp)</Label>
+                                        <Input
+                                          type="number"
+                                          min={0}
+                                          value={foodEditValues.price || ''}
+                                          onChange={(e) => setFoodEditValues((p) => ({ ...p, price: e.target.value }))}
+                                          className="h-8 text-sm"
+                                        />
+                                      </div>
+                                      <div className="space-y-1">
+                                        <Label className="text-xs">Stok</Label>
+                                        <Input
+                                          type="number"
+                                          min={0}
+                                          value={foodEditValues.stock || ''}
+                                          onChange={(e) => setFoodEditValues((p) => ({ ...p, stock: e.target.value }))}
+                                          className="h-8 text-sm"
+                                        />
+                                      </div>
+                                      <div className="space-y-1">
+                                        <Label className="text-xs">Emoji</Label>
+                                        <Input
+                                          value={foodEditValues.emoji || ''}
+                                          onChange={(e) => setFoodEditValues((p) => ({ ...p, emoji: e.target.value }))}
+                                          className="h-8 text-sm"
+                                          maxLength={4}
+                                        />
+                                      </div>
+                                    </div>
+                                    <div className="flex gap-2">
+                                      <Button size="sm" onClick={() => saveFood(f.id)} disabled={saving} className="flex-1 hover:glow-neon">
+                                        <Save className="h-3.5 w-3.5 mr-1" />Simpan
+                                      </Button>
+                                      <Button size="sm" variant="outline" onClick={cancelEditFood} className="flex-1">
+                                        <X className="h-3.5 w-3.5 mr-1" />Batal
+                                      </Button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-3 min-w-0">
+                                      <span className="text-xl shrink-0">{f.emoji || '•'}</span>
+                                      <div className="min-w-0">
+                                        <p className="font-medium text-sm truncate">{f.name}</p>
+                                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                                          <span className="text-primary font-semibold">{formatRupiah(f.price)}</span>
+                                          <span>Stok: <span className={f.stock === 0 ? 'text-destructive font-semibold' : ''}>{f.stock}</span></span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-1 shrink-0">
+                                      <button
+                                        onClick={() => toggleFoodActive(f)}
+                                        className="p-1.5 rounded-lg hover:bg-secondary transition-colors"
+                                        title={f.is_active ? 'Nonaktifkan' : 'Aktifkan'}
+                                      >
+                                        {f.is_active
+                                          ? <ToggleRight className="h-5 w-5 text-primary" />
+                                          : <ToggleLeft className="h-5 w-5 text-muted-foreground" />
+                                        }
+                                      </button>
+                                      <button
+                                        onClick={() => startEditFood(f)}
+                                        className="p-1.5 rounded-lg hover:bg-secondary transition-colors"
+                                        title="Edit"
+                                      >
+                                        <Pencil className="h-4 w-4 text-muted-foreground hover:text-foreground" />
+                                      </button>
+                                      <button
+                                        onClick={() => deleteFood(f)}
+                                        className="p-1.5 rounded-lg hover:bg-destructive/20 transition-colors"
+                                        title="Hapus"
+                                      >
+                                        <Trash2 className="h-4 w-4 text-muted-foreground hover:text-destructive" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {/* Any other categories */}
+                    {foods
+                      .filter((f) => f.category !== 'food' && f.category !== 'drink')
+                      .length > 0 && (
+                      <div className="mb-4">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Lainnya</p>
+                        <div className="space-y-2">
+                          {foods.filter((f) => f.category !== 'food' && f.category !== 'drink').map((f) => (
+                            <div key={f.id} className={`p-3 rounded-xl border ${f.is_active ? 'bg-card border-border/50' : 'bg-secondary/20 border-border/20 opacity-60'}`}>
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <span className="text-xl shrink-0">{f.emoji || '•'}</span>
+                                  <div className="min-w-0">
+                                    <p className="font-medium text-sm truncate">{f.name}</p>
+                                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                                      <span className="text-primary font-semibold">{formatRupiah(f.price)}</span>
+                                      <span>Stok: {f.stock}</span>
+                                      <span className="px-1.5 py-0.5 rounded bg-secondary">{f.category}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button onClick={() => toggleFoodActive(f)} className="p-1.5 rounded-lg hover:bg-secondary transition-colors">
+                                    {f.is_active ? <ToggleRight className="h-5 w-5 text-primary" /> : <ToggleLeft className="h-5 w-5 text-muted-foreground" />}
+                                  </button>
+                                  <button onClick={() => startEditFood(f)} className="p-1.5 rounded-lg hover:bg-secondary transition-colors">
+                                    <Pencil className="h-4 w-4 text-muted-foreground" />
+                                  </button>
+                                  <button onClick={() => deleteFood(f)} className="p-1.5 rounded-lg hover:bg-destructive/20 transition-colors">
+                                    <Trash2 className="h-4 w-4 text-muted-foreground hover:text-destructive" />
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </ScrollArea>
             </TabsContent>
