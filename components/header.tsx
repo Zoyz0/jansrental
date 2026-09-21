@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { Gamepad2, ShoppingCart, Menu, X } from 'lucide-react';
+import { Gamepad2, ShoppingCart, Menu, X, History } from 'lucide-react';
 import { useCart } from '@/contexts/cart-context';
 import { cn } from '@/lib/utils';
 
@@ -32,6 +32,7 @@ export default function Header() {
     { href: '/', label: 'Beranda' },
     { href: '/booking', label: 'Booking di Tempat' },
     { href: '/sewa-harian', label: 'Sewa Harian' },
+    { href: '/riwayat', label: 'Riwayat' },
   ];
 
   return (
@@ -83,6 +84,13 @@ export default function Header() {
 
           {/* Actions */}
           <div className="flex items-center gap-2">
+            <Link
+              href="/riwayat"
+              className="relative p-2.5 rounded-xl glass-card border border-border/30 hover:border-primary/40 transition-all duration-200 hover:glow-neon group"
+              aria-label="Riwayat"
+            >
+              <History className="h-5 w-5 text-foreground group-hover:text-primary transition-colors" />
+            </Link>
             <button
               onClick={openCart}
               className="relative p-2.5 rounded-xl glass-card border border-border/30 hover:border-primary/40 transition-all duration-200 hover:glow-neon group"

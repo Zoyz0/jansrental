@@ -1,10 +1,14 @@
 'use client';
 
-import { useState, useRef } from 'react';
-import { Loader2, CheckCircle2, XCircle, Clock, User, Phone, ArrowLeft, Receipt, ScanLine, Wallet, Store } from 'lucide-react';
+import { useState, useRef, useCallback } from 'react';
+import {
+  Loader2, CheckCircle2, XCircle, Clock, User, Phone, ArrowLeft,
+  Receipt, ScanLine, Wallet, Store, Download, History,
+} from 'lucide-react';
 import { useCart } from '@/contexts/cart-context';
 import { formatRupiah } from '@/lib/format';
 import { supabase } from '@/lib/supabase';
+import { addBookingHistory, type BookingHistoryEntry } from '@/lib/booking-history';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -16,6 +20,7 @@ import {
 } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
+import { toast } from 'sonner';
 
 interface CheckoutDialogProps {
   open: boolean;
@@ -24,6 +29,7 @@ interface CheckoutDialogProps {
 
 type CheckoutStep =
   | 'details'
+  | 'qris_loading'
   | 'pending'
   | 'cash_waiting'
   | 'cash_receipt'
@@ -44,7 +50,32 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
   const [error, setError] = useState<string>('');
   const [polling, setPolling] = useState(false);
   const [paidAmount, setPaidAmount] = useState<number>(0);
+  const [downloading, setDownloading] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const receiptRef = useRef<HTMLDivElement>(null);
+
+  const saveHistory = useCallback((opts: {
+    status: BookingHistoryEntry['status'];
+    txId?: string;
+    bId?: string;
+  }) => {
+    addBookingHistory({
+      id: opts.txId || opts.bId || crypto.randomUUID(),
+      date: new Date().toISOString(),
+      consoleName: items.find((i) => i.type === 'console')?.name || 'N/A',
+      durationHours: items.find((i) => i.type === 'console')?.durationHours || 0,
+      foodItems: items
+        .filter((i) => i.type === 'food')
+        .map((i) => ({ name: i.name, qty: i.qty, emoji: i.emoji })),
+      totalAmount: totalAmount,
+      paymentMethod: paymentMethod,
+      status: opts.status,
+      customerName,
+      customerPhone,
+      transactionId: opts.txId,
+      bookingId: opts.bId,
+    });
+  }, [items, totalAmount, paymentMethod, customerName, customerPhone]);
 
   const handleCheckout = async () => {
     if (!customerName.trim() || !customerPhone.trim()) {
@@ -78,6 +109,8 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
       return;
     }
 
+    // QRIS: show loading screen first
+    setStep('qris_loading');
     try {
       const res = await fetch('/api/checkout', {
         method: 'POST',
@@ -115,6 +148,7 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
         if (intervalRef.current) clearInterval(intervalRef.current);
         setPolling(false);
         setStep('expired');
+        saveHistory({ status: 'expired', txId });
         return;
       }
 
@@ -130,11 +164,14 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
           if (intervalRef.current) clearInterval(intervalRef.current);
           setPolling(false);
           setStep('success');
+          saveHistory({ status: 'paid', txId });
           clearCart();
         } else if (data.status === 'expired' || data.status === 'failed') {
           if (intervalRef.current) clearInterval(intervalRef.current);
           setPolling(false);
-          setStep(data.status === 'expired' ? 'expired' : 'failed');
+          const failStep = data.status === 'expired' ? 'expired' : 'failed';
+          setStep(failStep);
+          saveHistory({ status: data.status === 'expired' ? 'expired' : 'failed', txId });
         }
       } catch {
         // keep polling on network error
@@ -159,11 +196,34 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
           if (intervalRef.current) clearInterval(intervalRef.current);
           setPolling(false);
           setStep('cash_receipt');
+          saveHistory({ status: 'paid', bId });
         }
       } catch {
         // keep polling
       }
     }, 5000);
+  };
+
+  const handleDownloadReceipt = async () => {
+    if (!receiptRef.current) return;
+    setDownloading(true);
+    try {
+      const { toPng } = await import('html-to-image');
+      const dataUrl = await toPng(receiptRef.current, {
+        quality: 0.95,
+        backgroundColor: '#0a0a0a',
+        pixelRatio: 2,
+      });
+      const link = document.createElement('a');
+      link.download = `struk-lineup-${Date.now()}.png`;
+      link.href = dataUrl;
+      link.click();
+      toast.success('Struk berhasil diunduh');
+    } catch {
+      toast.error('Gagal mengunduh struk');
+    } finally {
+      setDownloading(false);
+    }
   };
 
   const handleReset = () => {
@@ -208,16 +268,82 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
     );
   };
 
+  const renderReceipt = (
+    title: string,
+    idLabel: string,
+    idValue: string,
+    methodLabel: string,
+  ) => (
+    <div
+      ref={receiptRef}
+      className="p-4 rounded-xl bg-secondary/30 border border-primary/20 text-left space-y-2"
+    >
+      <div className="flex items-center gap-2 text-sm font-semibold mb-2">
+        <Receipt className="h-4 w-4 text-primary" />
+        {title}
+      </div>
+      <div className="text-center py-1">
+        <p className="font-display text-sm font-bold text-neon">Line Up Gaming Space</p>
+        <p className="text-[10px] text-muted-foreground">Bogor Barat</p>
+      </div>
+      <Separator />
+      <div className="flex justify-between text-xs">
+        <span className="text-muted-foreground">Nama</span>
+        <span className="font-medium">{customerName}</span>
+      </div>
+      <div className="flex justify-between text-xs">
+        <span className="text-muted-foreground">HP</span>
+        <span className="font-medium">{customerPhone}</span>
+      </div>
+      <div className="flex justify-between text-xs">
+        <span className="text-muted-foreground">Metode</span>
+        <span className="font-medium">{methodLabel}</span>
+      </div>
+      <Separator />
+      {items.length > 0 && (
+        <div className="space-y-1">
+          {items.map((item) => (
+            <div key={item.id} className="flex justify-between text-xs">
+              <span className="text-muted-foreground">
+                {item.emoji && `${item.emoji} `}
+                {item.name}
+                {item.type === 'food' && ` ×${item.qty}`}
+                {item.type === 'console' && item.durationHours && ` (${item.durationHours}j)`}
+              </span>
+              <span className="font-medium">
+                {formatRupiah(item.price * (item.type === 'food' ? item.qty : 1))}
+              </span>
+            </div>
+          ))}
+          <Separator />
+        </div>
+      )}
+      <div className="flex justify-between text-sm">
+        <span className="font-semibold">Total Dibayar</span>
+        <span className="font-bold text-primary">{formatRupiah(paidAmount)}</span>
+      </div>
+      <div className="flex justify-between text-xs">
+        <span className="text-muted-foreground">{idLabel}</span>
+        <span className="font-mono text-[10px]">{idValue.slice(0, 24)}</span>
+      </div>
+      <Separator />
+      <p className="text-center text-[10px] text-muted-foreground">
+        {format(new Date(), 'dd MMM yyyy, HH:mm')} — Terima kasih!
+      </p>
+    </div>
+  );
+
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) handleReset(); onOpenChange(v); }}>
       <DialogContent className="max-w-md max-h-[90vh] overflow-hidden p-0 z-[100]">
         <DialogHeader className="p-5 pb-2">
           <DialogTitle className="font-display text-xl font-bold text-neon">
             {step === 'details' && 'Checkout Pesanan'}
+            {step === 'qris_loading' && 'Menyiapkan QRIS...'}
             {step === 'pending' && 'Scan QRIS untuk Bayar'}
             {step === 'cash_waiting' && 'Menunggu Konfirmasi Kasir'}
-            {step === 'cash_receipt' && 'Pembayaran Diterima!'}
-            {step === 'success' && 'Pembayaran Berhasil!'}
+            {step === 'cash_receipt' && 'Pembayaran Berhasil'}
+            {step === 'success' && 'Pembayaran Berhasil'}
             {step === 'failed' && 'Pembayaran Gagal'}
             {step === 'expired' && 'QRIS Kedaluwarsa'}
           </DialogTitle>
@@ -228,7 +354,6 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
             {step === 'details' && (
               <div className="space-y-4">
                 {stepIndicator(0)}
-                {/* Order summary */}
                 <div className="p-3 rounded-xl bg-secondary/30 border border-border/30 space-y-2">
                   {items.map((item) => (
                     <div key={item.id} className="flex justify-between text-sm">
@@ -254,7 +379,6 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
                   </div>
                 </div>
 
-                {/* Payment method selection */}
                 <div className="space-y-2">
                   <Label>Metode Pembayaran</Label>
                   <div className="grid grid-cols-2 gap-2">
@@ -285,7 +409,6 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
                   </div>
                 </div>
 
-                {/* Customer info */}
                 <div className="space-y-3">
                   <div className="space-y-1.5">
                     <Label htmlFor="name" className="flex items-center gap-1.5">
@@ -328,6 +451,27 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
               </div>
             )}
 
+            {/* QRIS Loading screen */}
+            {step === 'qris_loading' && (
+              <div className="space-y-6 text-center py-8">
+                <div className="relative inline-flex">
+                  <div className="p-6 rounded-full bg-primary/10 border-2 border-primary/30 animate-pulse-glow">
+                    <ScanLine className="h-12 w-12 text-primary animate-pulse" />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <h3 className="font-display text-lg font-bold">Menyiapkan QRIS</h3>
+                  <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                    <span>Sedang membuat kode pembayaran...</span>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground/60 max-w-xs mx-auto">
+                  Mohon tunggu sebentar, QRIS akan muncul otomatis dalam beberapa detik.
+                </p>
+              </div>
+            )}
+
             {step === 'pending' && (
               <div className="space-y-4 text-center">
                 {stepIndicator(1)}
@@ -359,7 +503,6 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
               </div>
             )}
 
-            {/* Cash waiting — no finish button, must wait for admin */}
             {step === 'cash_waiting' && (
               <div className="space-y-5 text-center py-6">
                 {stepIndicator(1)}
@@ -406,93 +549,68 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
               </div>
             )}
 
-            {/* Cash receipt — shown after admin confirms payment */}
+            {/* Cash receipt */}
             {step === 'cash_receipt' && (
               <div className="space-y-4 text-center py-4">
                 {stepIndicator(2)}
-                <div className="relative inline-flex">
-                  <CheckCircle2 className="h-20 w-20 text-primary mx-auto glow-green" />
+                <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-green-500/10 border border-green-500/30">
+                  <CheckCircle2 className="h-5 w-5 text-green-400" />
+                  <span className="font-display font-semibold text-green-400">Pembayaran Berhasil</span>
                 </div>
-                <h3 className="font-display text-lg font-bold">Pembayaran Diterima!</h3>
-                <div className="p-4 rounded-xl bg-secondary/30 border border-primary/20 text-left space-y-2">
-                  <div className="flex items-center gap-2 text-sm font-semibold mb-2">
-                    <Receipt className="h-4 w-4 text-primary" />
-                    Struk Pembayaran
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">Nama</span>
-                    <span className="font-medium">{customerName}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">HP</span>
-                    <span className="font-medium">{customerPhone}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">Metode</span>
-                    <span className="font-medium">Tunai (Bayar di Tempat)</span>
-                  </div>
-                  <Separator />
-                  <div className="flex justify-between text-sm">
-                    <span className="font-semibold">Total Dibayar</span>
-                    <span className="font-bold text-primary">{formatRupiah(paidAmount)}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">ID Pesanan</span>
-                    <span className="font-mono text-[10px]">{bookingId.slice(0, 24)}</span>
-                  </div>
-                </div>
+                {renderReceipt('Struk Pembayaran', 'ID Pesanan', bookingId, 'Tunai (Bayar di Tempat)')}
                 <p className="text-sm text-muted-foreground">
                   Pembayaran Anda telah dikonfirmasi oleh kasir. Simpan struk ini sebagai bukti.
                 </p>
-                <Button onClick={handleReset} variant="outline" className="w-full">
-                  Selesai
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={handleDownloadReceipt}
+                    disabled={downloading}
+                    className="flex-1 hover:glow-neon"
+                  >
+                    {downloading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Download className="h-4 w-4 mr-2" />}
+                    Simpan Struk
+                  </Button>
+                  <Button onClick={handleReset} variant="outline" className="flex-1">
+                    Selesai
+                  </Button>
+                </div>
               </div>
             )}
 
+            {/* QRIS success */}
             {step === 'success' && (
               <div className="space-y-4 text-center py-4">
                 {stepIndicator(2)}
-                <div className="relative inline-flex">
-                  <CheckCircle2 className="h-20 w-20 text-primary mx-auto glow-green" />
+                <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-green-500/10 border border-green-500/30">
+                  <CheckCircle2 className="h-5 w-5 text-green-400" />
+                  <span className="font-display font-semibold text-green-400">Pembayaran Berhasil</span>
                 </div>
-                <h3 className="font-display text-lg font-bold">Pembayaran Diterima!</h3>
-                <div className="p-4 rounded-xl bg-secondary/30 border border-primary/20 text-left space-y-2">
-                  <div className="flex items-center gap-2 text-sm font-semibold mb-2">
-                    <Receipt className="h-4 w-4 text-primary" />
-                    Bukti Pemesanan
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">Nama</span>
-                    <span className="font-medium">{customerName}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">HP</span>
-                    <span className="font-medium">{customerPhone}</span>
-                  </div>
-                  <Separator />
-                  <div className="flex justify-between text-sm">
-                    <span className="font-semibold">Total Dibayar</span>
-                    <span className="font-bold text-primary">{formatRupiah(paidAmount)}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">ID Transaksi</span>
-                    <span className="font-mono text-[10px]">{transactionId.slice(0, 24)}</span>
-                  </div>
-                </div>
+                {renderReceipt('Bukti Pemesanan', 'ID Transaksi', transactionId, 'QRIS')}
                 <p className="text-sm text-muted-foreground">
                   Tunjukkan bukti ini saat datang ke Line Up Gaming Space.
                 </p>
-                <Button onClick={handleReset} variant="outline" className="w-full">
-                  Selesai
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={handleDownloadReceipt}
+                    disabled={downloading}
+                    className="flex-1 hover:glow-neon"
+                  >
+                    {downloading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Download className="h-4 w-4 mr-2" />}
+                    Simpan Struk
+                  </Button>
+                  <Button onClick={handleReset} variant="outline" className="flex-1">
+                    Selesai
+                  </Button>
+                </div>
               </div>
             )}
 
             {step === 'failed' && (
               <div className="space-y-4 text-center py-6">
-                <XCircle className="h-16 w-16 text-destructive mx-auto" />
-                <h3 className="font-display text-lg font-bold">Pembayaran Gagal</h3>
+                <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-red-500/10 border border-red-500/30">
+                  <XCircle className="h-5 w-5 text-red-400" />
+                  <span className="font-display font-semibold text-red-400">Pembayaran Gagal</span>
+                </div>
                 <p className="text-sm text-muted-foreground">{error || 'Terjadi kesalahan. Silakan coba lagi.'}</p>
                 <Button onClick={handleReset} variant="outline" className="w-full">
                   Coba Lagi
@@ -502,8 +620,10 @@ export default function CheckoutDialog({ open, onOpenChange }: CheckoutDialogPro
 
             {step === 'expired' && (
               <div className="space-y-4 text-center py-6">
-                <Clock className="h-16 w-16 text-muted-foreground mx-auto" />
-                <h3 className="font-display text-lg font-bold">QRIS Kedaluwarsa</h3>
+                <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-gray-500/10 border border-gray-500/30">
+                  <Clock className="h-5 w-5 text-gray-400" />
+                  <span className="font-display font-semibold text-gray-400">QRIS Kedaluwarsa</span>
+                </div>
                 <p className="text-sm text-muted-foreground">
                   Waktu pembayaran habis. Silakan buat pesanan baru.
                 </p>
